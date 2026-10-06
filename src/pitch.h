@@ -17,6 +17,7 @@ struct Frame {
     float clarity = 0.f;   // 주기성 0~1 (높을수록 또렷한 음)
     float db = -100.f;     // 프레임 RMS (dBFS)
     bool voiced = false;
+    float noiseDb = -100.f;  // 그때의 바닥 소음 추정 (진단용)
 };
 
 // 반음 번호 (MIDI). A4 = 69 = 440 Hz

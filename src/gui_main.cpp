@@ -449,6 +449,14 @@ struct App {
         ImGui::SetNextItemWidth(120 * uiScale);
         ImGui::SliderFloat("##span", &viewSpan, 6.f, 36.f, "%.0f 반음 보기");
         ImGui::TextDisabled("%s", kDrillHelp[(int)drill]);
+        if (micOn && !hist.empty()) {
+            // 진단: 왜 안 찍히는지 볼 수 있게 (입력 크기 · 바닥 소음 · 주기성). 바닥 + 문턱보다 작거나 주기성이 낮으면 안 찍힌다
+            const auto& f = hist.back();
+            const float needDb = f.noiseDb + (18.f - 10.f * sensitivity), needCl = 0.75f - 0.35f * sensitivity;
+            ImGui::SameLine(0, 16);
+            ImGui::TextDisabled("입력 %.0f dB (필요 %.0f) · 주기성 %.2f (필요 %.2f)%s", f.db, needDb, f.clarity, needCl,
+                                f.voiced ? "" : f.db <= needDb ? "  ← 소리가 작아요 (민감도를 올리거나 마이크 가까이)" : f.clarity < needCl ? "  ← 음이 또렷하지 않아요 (민감도를 올리세요)" : "");
+        }
 
         if (haveCurrent) {
             const int nearest = (int)std::lround(smoothMidi);

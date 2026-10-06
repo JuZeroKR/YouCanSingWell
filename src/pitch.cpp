@@ -118,11 +118,13 @@ Frame Tracker::analyzeFrame(const float* raw, const float* filt) {
 }
 
 void Tracker::postProcess(Frame& f) {
-    // 바닥 소음: 조용할 땐 천천히 따라 내려가고, 커지면 아주 천천히 올라간다
+    // 바닥 소음: 조용할 땐 바로 따라 내려가고, 올라갈 땐 주기성이 낮은(목소리가 아닌) 프레임에서만 아주 천천히.
+    // 목소리 프레임으로도 올리면 길게 소리를 낼 때 바닥이 목소리까지 올라와 음이 사라진다
     if (f.db < noiseDb_) noiseDb_ += (f.db - noiseDb_) * 0.2f;
-    else noiseDb_ += (f.db - noiseDb_) * 0.002f;
-    const bool loud = f.db > noiseDb_ + aboveNoiseDb_ && f.db > -48.f;
+    else if (f.clarity < 0.4f) noiseDb_ += (f.db - noiseDb_) * 0.002f;
+    const bool loud = f.db > noiseDb_ + aboveNoiseDb_ && f.db > -62.f;
     f.voiced = loud && f.clarity >= clarityThr_ && f.hz >= kMinHz && f.hz <= kMaxHz;
+    f.noiseDb = noiseDb_;
     if (f.voiced && lastHz_ > 0.f) {
         // 직전 값의 옥타브 위아래로 튀었으면 바로잡는다 (한 프레임 만에 한 옥타브를 넘는 노래는 없다)
         const float ratio = f.hz / lastHz_;
