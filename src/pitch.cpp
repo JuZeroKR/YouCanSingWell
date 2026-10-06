@@ -7,13 +7,9 @@
 namespace pitch {
 namespace {
 
-constexpr int kCorrWin = 320;                      // 상관 창 20 ms
 constexpr int kLagMin = (int)(kRate / kMaxHz);     // 16  (1000 Hz)
 constexpr int kLagMax = (int)(kRate / kMinHz);     // 266 (60 Hz)
-constexpr int kFrameLen = kCorrWin + kLagMax;      // 586
 constexpr float kPi = 3.14159265358979f;
-constexpr float kClarityVoiced = 0.62f;            // 주기성 문턱 (너무 낮으면 방 소음이 점으로 깜빡인다)
-constexpr float kAboveNoiseDb = 15.f;              // 바닥 소음보다 이만큼 커야 소리로 친다
 constexpr float kLagBias = 0.03f;                  // 긴 지연(낮은 음) 을 조금 불리하게 — 옥타브 아래로 떨어지는 것 방지
 
 const char* kNames[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
@@ -72,6 +68,7 @@ void Tracker::reset() {
 }
 
 Frame Tracker::analyzeFrame(const float* raw, const float* filt) {
+    const int kCorrWin = corrWin_, kFrameLen = frameLen();
     Frame f;
     // 크기: 앞 320 샘플 RMS
     double e = 0;
@@ -124,8 +121,8 @@ void Tracker::postProcess(Frame& f) {
     // 바닥 소음: 조용할 땐 천천히 따라 내려가고, 커지면 아주 천천히 올라간다
     if (f.db < noiseDb_) noiseDb_ += (f.db - noiseDb_) * 0.2f;
     else noiseDb_ += (f.db - noiseDb_) * 0.002f;
-    const bool loud = f.db > noiseDb_ + kAboveNoiseDb && f.db > -48.f;
-    f.voiced = loud && f.clarity >= kClarityVoiced && f.hz >= kMinHz && f.hz <= kMaxHz;
+    const bool loud = f.db > noiseDb_ + aboveNoiseDb_ && f.db > -48.f;
+    f.voiced = loud && f.clarity >= clarityThr_ && f.hz >= kMinHz && f.hz <= kMaxHz;
     if (f.voiced && lastHz_ > 0.f) {
         // 직전 값의 옥타브 위아래로 튀었으면 바로잡는다 (한 프레임 만에 한 옥타브를 넘는 노래는 없다)
         const float ratio = f.hz / lastHz_;
@@ -135,6 +132,13 @@ void Tracker::postProcess(Frame& f) {
     if (f.voiced) { lastHz_ = f.hz; ++voicedRun_; unvoicedRun_ = 0; }
     else { f.hz = 0.f; voicedRun_ = 0; if (++unvoicedRun_ > 30) lastHz_ = 0.f; }  // 300 ms 쉬면 직전 값을 잊는다
 }
+
+void Tracker::setSensitivity(float clarityThreshold, float aboveNoiseDb) {
+    clarityThr_ = clarityThreshold;
+    aboveNoiseDb_ = aboveNoiseDb;
+}
+
+void Tracker::setWindowMs(int ms) { corrWin_ = std::max(160, std::min(960, ms * kRate / 1000)); }
 
 std::vector<Frame> Tracker::push(const float* pcm48k, size_t n) {
     // 48k → 16k: 3 샘플 평균 (간단한 저역 통과 겸)
@@ -150,7 +154,7 @@ std::vector<Frame> Tracker::push(const float* pcm48k, size_t n) {
     }
     std::vector<Frame> out;
     size_t pos = 0;
-    while (raw_.size() - pos >= (size_t)kFrameLen) {
+    while (raw_.size() - pos >= (size_t)frameLen()) {
         Frame f = analyzeFrame(raw_.data() + pos, filt_.data() + pos);
         postProcess(f);
         out.push_back(f);
@@ -170,7 +174,7 @@ std::vector<Frame> Tracker::analyzeAll(const std::vector<float>& pcm16k) {
     std::vector<Frame> out;
     // 파일은 바닥 소음을 전체 5 퍼센타일로 한 번에 정한다
     std::vector<float> dbs;
-    for (size_t pos = 0; pos + kFrameLen <= pcm16k.size(); pos += kHop) {
+    for (size_t pos = 0; pos + (size_t)t.frameLen() <= pcm16k.size(); pos += kHop) {
         Frame f = t.analyzeFrame(pcm16k.data() + pos, filt.data() + pos);
         out.push_back(f);
         dbs.push_back(f.db);

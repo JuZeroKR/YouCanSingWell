@@ -145,6 +145,13 @@ struct App {
     int sustainMidi = 55;
     bool guideTone = true;
     float guideVolume = 0.25f;
+    float sensitivity = 0.6f;         // 마이크 민감도 0~1 (높을수록 거친 소리 · 작은 소리도 음으로 친다)
+    void applySensitivity() {
+        // 0 → 주기성 0.75 · 바닥 +18 dB (조용한 방, 또렷한 소리만), 1 → 0.40 · +8 dB (립트릴처럼 거친 소리까지)
+        const float clarity = 0.75f - 0.35f * sensitivity, above = 18.f - 10.f * sensitivity;
+        tracker.setSensitivity(clarity, above);
+        songTracker.setSensitivity(clarity, above);
+    }
     double sumAbsCents = 0;
     int scoredFrames = 0, okFrames = 0;
     float windowSec = 12.f;           // 가로 12 초 (천천히 흐르게)
@@ -209,6 +216,8 @@ struct App {
             micOn = true;
             micError.clear();
             tracker.reset();
+            tracker.setWindowMs(40);  // 립트릴의 입술 떨림(약 25~30 Hz) 보다 긴 창으로 봐야 음이 끊기지 않는다
+            applySensitivity();
         } catch (const std::exception& e) {
             micError = e.what();
             micOn = false;
@@ -354,7 +363,14 @@ struct App {
                 const auto& f = hist[i];
                 const double t = (first + (long long)i) * 0.01;
                 if (t < nowT - windowSec) continue;
-                if (!f.voiced) { flush(); continue; }
+                if (!f.voiced) {
+                    // 4 프레임(40 ms) 이하의 빈틈은 그냥 잇는다 (립트릴은 입술이 닫힐 때마다 잠깐 끊긴다)
+                    size_t j = i;
+                    while (j < hist.size() && !hist[j].voiced && j - i <= 4) ++j;
+                    if (j < hist.size() && hist[j].voiced && j - i <= 4 && !pts.empty()) continue;
+                    flush();
+                    continue;
+                }
                 // 앞뒤 프레임과 중앙값 (떨림을 줄여 선이 차분하게)
                 float m = pitch::hzToMidi(f.hz);
                 if (i > 0 && i + 1 < hist.size() && hist[i - 1].voiced && hist[i + 1].voiced) {
@@ -395,6 +411,10 @@ struct App {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(100 * uiScale);
         ImGui::SliderFloat("##gv", &guideVolume, 0.f, 0.6f, "음량");
+        ImGui::SameLine(0, 16);
+        ImGui::SetNextItemWidth(140 * uiScale);
+        if (ImGui::SliderFloat("##sens", &sensitivity, 0.f, 1.f, "민감도 %.0f%%")) applySensitivity();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("립트릴이 잘 안 잡히면 올리고, 가만히 있는데 점이 찍히면 내리세요");
 
         auto noteSlider = [&](const char* label, int* midi, int lo, int hi, float width) {
             ImGui::SetNextItemWidth(width);
@@ -506,6 +526,9 @@ struct App {
             songSpan = std::clamp(std::ceil(hi2 - lo2) + 4.f, 10.f, 30.f);
         }
         if (startAtSec > 0) { engine.seek(startAtSec); startAtSec = 0; }
+        songTracker.reset();
+        songTracker.setWindowMs(40);
+        applySensitivity();
         try { if (!engine.active()) { stopMic(); engine.start(); } } catch (const std::exception& e) { songMessage = e.what(); }
     }
 

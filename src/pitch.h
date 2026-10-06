@@ -35,10 +35,16 @@ public:
     // 파일 전체(16 kHz) 를 한 번에 분석
     static std::vector<Frame> analyzeAll(const std::vector<float>& pcm16k);
 
+    // 민감도: 주기성 문턱(0.4 ~ 0.8, 낮을수록 거친 소리도 음으로 침) 과 바닥 소음 대비 dB
+    void setSensitivity(float clarityThreshold, float aboveNoiseDb);
+    // 상관 창 길이(ms). 립트릴처럼 입술이 떨려 소리가 끊기는 발성은 40 ms 이상이 안정적이다 (기본 20 ms)
+    void setWindowMs(int ms);
+
 private:
     struct Biquad { float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0; float process(float x); };
     static Biquad makeBiquad(float fc, float fs, bool highpass);
-    Frame analyzeFrame(const float* raw, const float* filt);   // 587 샘플
+    Frame analyzeFrame(const float* raw, const float* filt);   // frameLen() 샘플
+    int frameLen() const { return corrWin_ + 266; }
     void postProcess(Frame& f);
 
     Biquad hp_, lp_;
@@ -50,6 +56,9 @@ private:
     float lastHz_ = 0.f;              // 옥타브 튐 방지용 직전 값
     int voicedRun_ = 0;
     int unvoicedRun_ = 0;
+    int corrWin_ = 320;
+    float clarityThr_ = 0.62f;
+    float aboveNoiseDb_ = 15.f;
 };
 
 }  // namespace pitch
