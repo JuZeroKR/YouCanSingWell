@@ -145,10 +145,11 @@ struct App {
     int sustainMidi = 55;
     bool guideTone = true;
     float guideVolume = 0.25f;
-    float sensitivity = 0.6f;         // 마이크 민감도 0~1 (높을수록 거친 소리 · 작은 소리도 음으로 친다)
+    float sensitivity = 60.f;         // 마이크 민감도 0~100 % (높을수록 거친 소리 · 작은 소리도 음으로 친다)
     void applySensitivity() {
         // 0 → 주기성 0.75 · 바닥 +18 dB (조용한 방, 또렷한 소리만), 1 → 0.40 · +8 dB (립트릴처럼 거친 소리까지)
-        const float clarity = 0.75f - 0.35f * sensitivity, above = 18.f - 10.f * sensitivity;
+        const float k = sensitivity / 100.f;
+        const float clarity = 0.75f - 0.35f * k, above = 18.f - 10.f * k;
         tracker.setSensitivity(clarity, above);
         songTracker.setSensitivity(clarity, above);
     }
@@ -413,7 +414,7 @@ struct App {
         ImGui::SliderFloat("##gv", &guideVolume, 0.f, 0.6f, "음량");
         ImGui::SameLine(0, 16);
         ImGui::SetNextItemWidth(140 * uiScale);
-        if (ImGui::SliderFloat("##sens", &sensitivity, 0.f, 1.f, "민감도 %.0f%%")) applySensitivity();
+        if (ImGui::SliderFloat("##sens", &sensitivity, 0.f, 100.f, "민감도 %.0f%%")) applySensitivity();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("립트릴이 잘 안 잡히면 올리고, 가만히 있는데 점이 찍히면 내리세요");
 
         auto noteSlider = [&](const char* label, int* midi, int lo, int hi, float width) {
@@ -452,7 +453,7 @@ struct App {
         if (micOn && !hist.empty()) {
             // 진단: 왜 안 찍히는지 볼 수 있게 (입력 크기 · 바닥 소음 · 주기성). 바닥 + 문턱보다 작거나 주기성이 낮으면 안 찍힌다
             const auto& f = hist.back();
-            const float needDb = f.noiseDb + (18.f - 10.f * sensitivity), needCl = 0.75f - 0.35f * sensitivity;
+            const float needDb = f.noiseDb + (18.f - 10.f * sensitivity / 100.f), needCl = 0.75f - 0.35f * sensitivity / 100.f;
             ImGui::SameLine(0, 16);
             ImGui::TextDisabled("입력 %.0f dB (필요 %.0f) · 주기성 %.2f (필요 %.2f)%s", f.db, needDb, f.clarity, needCl,
                                 f.voiced ? "" : f.db <= needDb ? "  ← 소리가 작아요 (민감도를 올리거나 마이크 가까이)" : f.clarity < needCl ? "  ← 음이 또렷하지 않아요 (민감도를 올리세요)" : "");
