@@ -171,6 +171,15 @@ struct App {
         else { ph.stage = 2; ph.index = 0; ph.u = u - demo - countIn - sing; }
         return ph;
     }
+    // 기다리던 구절에서 다음 키로 넘어가거나(next) 같은 키를 다시(again). 시계를 그 구절의 시작으로 맞춘다
+    void jumpPhrase(bool next) {
+        const double t = (frameNo - drillStartFrame) * 0.01;
+        const Phrase ph = phraseAt(t);
+        const double target = (ph.cycle + (next ? 1 : 0)) * repSec();
+        drillStartFrame = frameNo - (long long)std::llround(target * 100.0);
+        waiting = false;
+        resetNotes(-1);
+    }
     double noteSum[9] = {}; int noteCnt[9] = {}; int notesCycle = -1;   // 현재 구절의 음별 센트 누적
     void resetNotes(int cycle) { for (int i = 0; i < 9; ++i) { noteSum[i] = 0; noteCnt[i] = 0; } notesCycle = cycle; }
     void applySensitivity() {
@@ -454,7 +463,7 @@ struct App {
                 dl->AddText(font, 20.f * uiScale, ImVec2((g0.x + g1.x) / 2 - tw / 2, g0.y + 24 * uiScale), IM_COL32(255, 255, 255, 230), buf);
                 if (waiting) {
                     const Phrase next = phraseAt((cur.cycle + 1) * rep + 0.001);
-                    const std::string msg = "Space 또는 [다음 구절]: " + pitch::noteName(next.key) + " 에서 다시";
+                    const std::string msg = "Space: 다음 키 " + pitch::noteName(next.key) + "   ·   R: 이 키 다시";
                     const float mw = font->CalcTextSizeA(16.f * uiScale, FLT_MAX, 0.f, msg.c_str()).x;
                     dl->AddText(font, 16.f * uiScale, ImVec2((g0.x + g1.x) / 2 - mw / 2, g0.y + 24 * uiScale + 26 * uiScale), IM_COL32(255, 210, 80, 230), msg.c_str());
                 }
@@ -540,7 +549,7 @@ struct App {
         ImGui::SameLine();
         ImGui::BeginDisabled(!micOn);
         if (!running) { if (ImGui::Button("시작 (Space)")) startDrill(); }
-        else if (waiting) { if (ImGui::Button("다음 구절 (Space)")) waiting = false; ImGui::SameLine(); if (ImGui::Button("끝내기")) stopDrill(); }
+        else if (waiting) { if (ImGui::Button("다음 키 (Space)")) jumpPhrase(true); ImGui::SameLine(); if (ImGui::Button("끝내기")) stopDrill(); }
         else { if (ImGui::Button("멈춤 (Space)")) stopDrill(); }
         ImGui::EndDisabled();
         ImGui::SameLine(0, 16);
@@ -576,7 +585,11 @@ struct App {
                 ImGui::SameLine();
                 ImGui::Checkbox("구절마다 멈추기", &phraseWait);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("한 구절(도레미파솔파미레도) 이 끝나면 결과를 보여 주고 멈춥니다. Space 를 누르면 3박 카운트 뒤 다음 키로 이어집니다");
-                if (waiting) { ImGui::SameLine(); if (ImGui::Button("다음 구절")) waiting = false; }
+                if (running) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("이 키 다시 (R)")) jumpPhrase(false);
+                    if (waiting) { ImGui::SameLine(); if (ImGui::Button("다음 키")) jumpPhrase(true); }
+                }
             }
         } else if (drill == Drill::Sustain) {
             noteSlider("목표 음", &sustainMidi, 36, 84, 200 * uiScale);
@@ -928,8 +941,9 @@ struct App {
 
     void handleKeys() {
         if (ImGui::GetIO().WantTextInput) return;
+        if (ImGui::IsKeyPressed(ImGuiKey_R, false) && tab == 0 && running && drill == Drill::Scale5) jumpPhrase(false);
         if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
-            if (tab == 0) { if (micOn) { if (waiting) waiting = false; else if (running) stopDrill(); else startDrill(); } }
+            if (tab == 0) { if (micOn) { if (waiting) jumpPhrase(true); else if (running) stopDrill(); else startDrill(); } }
             else if (songLoaded) { if (engine.playing()) engine.pause(); else engine.play(); }
         }
     }
