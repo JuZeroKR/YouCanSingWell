@@ -246,7 +246,7 @@ struct App {
             const float m = pitch::hzToMidi(last.hz);
             smoothMidi = haveCurrent ? smoothMidi + (m - smoothMidi) * 0.5f : m;
             haveCurrent = true;
-            if (autoRange) viewCenter += (m - viewCenter) * 0.08f;  // 내 음을 천천히 따라간다
+            if (autoRange && (m < viewCenter - viewSpan / 2 + 1.f || m > viewCenter + viewSpan / 2 - 1.f)) viewCenter = std::round(m);  // 화면 밖으로 나갈 때만 옮긴다
         } else {
             int quiet = 0;
             for (auto it = hist.rbegin(); it != hist.rend() && !it->voiced && quiet <= 30; ++it) ++quiet;
@@ -262,12 +262,19 @@ struct App {
         }
     }
 
-    // 그래프 위에서 마우스 휠: 보이는 반음 수를 바꾼다 (6 ~ 36)
-    void zoomWithWheel(ImVec2 p, ImVec2 size, float* span) {
+    // 그래프 위에서 휠: 보이는 반음 수 (6 ~ 36). Shift+휠 또는 왼쪽 드래그: 위아래로 이동
+    void zoomWithWheel(ImVec2 p, ImVec2 size, float* span, float* center) {
         const ImVec2 m = ImGui::GetMousePos();
         if (m.x < p.x || m.x > p.x + size.x || m.y < p.y || m.y > p.y + size.y) return;
-        const float wheel = ImGui::GetIO().MouseWheel;
-        if (wheel != 0.f) *span = std::clamp(*span - wheel * 2.f, 6.f, 36.f);
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.MouseWheel != 0.f) {
+            if (io.KeyShift) *center = std::clamp(*center + io.MouseWheel, 24.f, 96.f);
+            else *span = std::clamp(*span - io.MouseWheel * 2.f, 6.f, 36.f);
+        }
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.f)) {
+            const float dy = io.MouseDelta.y;
+            *center = std::clamp(*center + dy / size.y * *span, 24.f, 96.f);
+        }
     }
 
     // 건반 눈금 (두 탭 공용). 흰 건반은 밝은 띠, 검은 건반은 어두운 띠, 칸이 넓으면 음 이름을 모두 적는다
@@ -281,10 +288,10 @@ struct App {
             if (!black) dl->AddRectFilled(ImVec2(g0.x, y0), ImVec2(g1.x, y1), IM_COL32(255, 255, 255, 10));
             dl->AddLine(ImVec2(g0.x, y1), ImVec2(g1.x, y1), IM_COL32(255, 255, 255, n == 0 ? 60 : 22));
             const float rowH = y1 - y0;
-            if ((!black && rowH >= 11.f * uiScale) || rowH >= 18.f * uiScale) {
+            if (!black && rowH >= 11.f * uiScale) {
                 const std::string name = pitch::noteName(m);
-                const float fs = std::min(16.f * uiScale, std::max(11.f * uiScale, rowH * 0.7f));
-                dl->AddText(font, fs, ImVec2(p.x + 4, (y0 + y1) / 2 - fs / 2), IM_COL32(200, 200, 200, n == 0 ? 255 : black ? 90 : 150), name.c_str());
+                const float fs = 13.f * uiScale;
+                dl->AddText(font, fs, ImVec2(p.x + 4, (y0 + y1) / 2 - fs / 2), IM_COL32(200, 200, 200, n == 0 ? 255 : 130), name.c_str());
             }
         }
     }
@@ -297,14 +304,17 @@ struct App {
         const ImVec2 g0(p.x + labelW, p.y), g1(p.x + size.x, p.y + size.y);
         const float gw = g1.x - g0.x, gh = g1.y - g0.y;
         // 목표가 있고 소리를 안 낼 땐 목표 쪽으로, 아무것도 없으면 그대로
-        if (autoRange && running && !haveCurrent) { float tg; if (targetAt((frameNo - drillStartFrame) * 0.01, &tg)) viewCenter += (tg - viewCenter) * 0.05f; }
+        if (autoRange && running) {
+            float tg;
+            if (targetAt((frameNo - drillStartFrame) * 0.01, &tg) && (tg < viewCenter - viewSpan / 2 + 1.f || tg > viewCenter + viewSpan / 2 - 1.f)) viewCenter = std::round(tg);
+        }
         if (!autoRange) viewCenter = (float)manualCenter;
         const float lo = viewCenter - viewSpan / 2, hi = viewCenter + viewSpan / 2;
         auto yOf = [&](float midi) { return g1.y - (midi - lo) / (hi - lo) * gh; };
         const float nowT = frameNo * 0.01f;
         auto xOf = [&](double t) { return (float)(g1.x - (nowT - t) / windowSec * gw); };
         drawKeyboardGrid(dl, p, size, (int)std::floor(lo), (int)std::ceil(hi), labelW, yOf);
-        zoomWithWheel(p, size, &viewSpan);
+        zoomWithWheel(p, size, &viewSpan, &viewCenter);
         dl->PushClipRect(g0, g1, true);
         if (running && drill != Drill::Free) {
             std::vector<ImVec2> pts;
@@ -390,8 +400,8 @@ struct App {
             noteSlider("목표 음", &sustainMidi, 36, 84, 200 * uiScale);
         }
         ImGui::SameLine(0, 16);
-        ImGui::Checkbox("세로 따라가기", &autoRange);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("켜면 내 음(또는 목표 음)을 세로 가운데에 두고 따라갑니다. 그래프 위에서 마우스 휠로 확대 · 축소");
+        ImGui::Checkbox("화면 밖이면 옮기기", &autoRange);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("내 음(또는 목표 음)이 화면 밖으로 나가면 그 음이 가운데 오게 한 번에 옮깁니다.\n그래프 위에서 휠: 확대 · 축소, Shift+휠 또는 드래그: 위아래 이동");
         if (!autoRange) {
             ImGui::SameLine();
             if (manualCenter == 55 && viewCenter != 55.f) manualCenter = (int)std::lround(viewCenter);
@@ -471,7 +481,12 @@ struct App {
         // 세로 가운데: 멜로디 전체의 중앙값에서 시작 (그 뒤로는 보이는 구간을 따라간다)
         std::vector<float> ms;
         for (const auto& f : melody) if (f.voiced) ms.push_back(pitch::hzToMidi(f.hz));
-        if (!ms.empty()) { std::nth_element(ms.begin(), ms.begin() + ms.size() / 2, ms.end()); songCenter = ms[ms.size() / 2]; }
+        if (ms.size() > 100) {
+            std::sort(ms.begin(), ms.end());
+            const float lo2 = ms[ms.size() / 50], hi2 = ms[ms.size() * 49 / 50];  // 2 ~ 98 퍼센타일
+            songCenter = std::round((lo2 + hi2) / 2);
+            songSpan = std::clamp(std::ceil(hi2 - lo2) + 4.f, 10.f, 30.f);
+        }
         if (startAtSec > 0) { engine.seek(startAtSec); startAtSec = 0; }
         try { if (!engine.active()) { stopMic(); engine.start(); } } catch (const std::exception& e) { songMessage = e.what(); }
     }
@@ -540,22 +555,12 @@ struct App {
         const float gw = g1.x - g0.x, gh = g1.y - g0.y;
         const double now = engine.positionSec();
         const double tLeft = now - songWindowSec * 0.35, tRight = now + songWindowSec * 0.65;
-        // 보이는 구간 멜로디의 가운데(최저 · 최고의 중간)로 천천히 따라간다. 멜로디가 폭이 넓으면 다 들어가게 조금 넓힌다
-        {
-            float mlo = 999.f, mhi = -999.f;
-            const long long k0 = std::max(0LL, (long long)(tLeft * 100)), k1 = std::min((long long)melody.size(), (long long)(tRight * 100) + 1);
-            for (long long k = k0; k < k1; ++k) if (melody[k].voiced) { const float m = pitch::hzToMidi(melody[k].hz); mlo = std::min(mlo, m); mhi = std::max(mhi, m); }
-            if (mhi >= mlo) {
-                songCenter += ((mlo + mhi) / 2 - songCenter) * 0.05f;
-                const float need = (mhi - mlo) + 3.f;
-                if (need > songSpan) songSpan += (need - songSpan) * 0.1f;
-            }
-        }
+        // 세로 축은 노래를 불러올 때 멜로디 범위에 맞춰 고정한다 (재생 중에 움직이면 어지럽다). 휠로 확대, Shift+휠 · 드래그로 이동
         const float lo = songCenter - songSpan / 2, hi = songCenter + songSpan / 2;
         auto yOf = [&](float midi) { return g1.y - (midi - lo) / (hi - lo) * gh; };
         auto xOf = [&](double t) { return (float)(g0.x + (t - tLeft) / songWindowSec * gw); };
         drawKeyboardGrid(dl, p, size, (int)std::floor(lo), (int)std::ceil(hi), labelW, yOf);
-        zoomWithWheel(p, size, &songSpan);
+        zoomWithWheel(p, size, &songSpan, &songCenter);
         dl->PushClipRect(g0, g1, true);
         // 멜로디 (파랑). 옥타브 무시면 내 음을 멜로디 옥타브로 옮겨 그리므로 멜로디는 그대로
         {
@@ -596,7 +601,7 @@ struct App {
         dl->PopClipRect();
         ImGui::Dummy(size);
         // 클릭하면 그 시각으로
-        if (ImGui::IsItemClicked()) {
+        if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && std::fabs(ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.f).y) < 4.f) {
             const float mx = ImGui::GetMousePos().x;
             if (mx >= g0.x) engine.seek(tLeft + (mx - g0.x) / gw * songWindowSec);
         }
