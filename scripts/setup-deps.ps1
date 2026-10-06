@@ -1,4 +1,4 @@
-# YouCanSingWell 의존성 설치 스크립트 (Windows / PowerShell)
+﻿# YouCanSingWell 의존성 설치 스크립트 (Windows / PowerShell)
 # third_party/ 아래에 빌드에 필요한 라이브러리를 받아 놓는다. 저장소에는 포함하지 않는다.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\setup-deps.ps1

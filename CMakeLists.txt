@@ -83,7 +83,7 @@ endif()
 
 # ---- GUI ----
 if(WIN32)
-    add_executable(youcansingwell WIN32 src/gui_main.cpp)
+    add_executable(youcansingwell WIN32 src/gui_main.cpp assets/youcansingwell.rc)
     target_link_libraries(youcansingwell PRIVATE
         ycs_core imgui
         ${TP}/glfw/lib-vc2022/glfw3_mt.lib
