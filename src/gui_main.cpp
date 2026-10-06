@@ -57,7 +57,7 @@ const char* kDrillNames[] = {"자유 (음정만 보기)", "사이렌 (립트릴)
 const char* kDrillHelp[] = {
     "그냥 소리를 내 보세요. 지금 음과 센트 차이가 위에 나옵니다.",
     "입술을 털며 '브르르' 소리로 파란 선을 따라 천천히 올라갔다 내려오세요. 소리가 끊기지 않게 숨을 고르게.",
-    "먼저 들려주는 소리를 듣고, 3박 카운트 뒤 블록에 맞춰 따라 부르세요. 음마다 색으로 결과가 나오고 구절이 끝나면 멈춥니다 (Space 로 다음 키).",
+    "들려주는 소리를 듣고 내 속도로 따라 부르세요. 밝은 칸의 음을 맞히면 다음 칸으로 넘어갑니다. 9음을 다 하면 멈춥니다 (Space 다음 키, R 다시).",
     "파란 선의 음을 길게 붙드세요. 노란 선이 흔들리지 않게.",
 };
 
@@ -153,6 +153,28 @@ struct App {
     static constexpr double kResultSec = 1.5;
     bool phraseWait = true;           // 구절이 끝나면 멈추고 Space 를 기다린다
     bool demoFirst = true;            // 구절마다 먼저 9음을 들려준 뒤(듣기) 카운트하고 내가 부른다
+    bool selfPaced = true;            // 자유 박자: 박자 없이, 다음 음을 맞히면 그 다음 음으로 넘어간다
+    // 자유 박자 상태
+    struct SelfPaced {
+        int stage = 0;                // 0 듣기, 1 따라 부르기, 2 결과
+        int keyIdx = 0;               // 몇 번째 키 (시작 키 + keyIdx 반음)
+        int index = 0;                // 지금 맞혀야 할 음 (0~8)
+        int hold = 0;                 // 맞은 채로 이어진 프레임 수
+        double holdSum = 0;
+        float cents[9] = {};          // 음마다 결과 (맞힌 순간의 평균 센트)
+        bool done[9] = {};
+        long long demoStart = 0;      // 듣기 시작 프레임
+        int listenIdx = -1;           // 듣기 중 들려주는 음
+    } sp;
+    int spKey() const { const int span = std::max(1, highMidi - lowMidi); return scaleStartMidi + (sp.keyIdx % (span + 1)); }
+    void spStartKey() {
+        sp.index = 0; sp.hold = 0; sp.holdSum = 0;
+        for (int i = 0; i < 9; ++i) { sp.cents[i] = 0; sp.done[i] = false; }
+        sp.stage = demoFirst ? 0 : 1;
+        sp.demoStart = frameNo;
+        sp.listenIdx = -1;
+        waiting = false;
+    }
     bool waiting = false;             // 지금 기다리는 중 (연습 시계를 멈춘다)
     struct Phrase { int cycle = 0; int stage = 0; int index = 0; double u = 0; int key = 0; double start = 0; };  // stage 3 듣기, 0 준비(카운트), 1 내가 부르기, 2 결과
     double demoSec() const { return demoFirst ? scaleNoteSec * 9 : 0.0; }
@@ -173,6 +195,7 @@ struct App {
     }
     // 기다리던 구절에서 다음 키로 넘어가거나(next) 같은 키를 다시(again). 시계를 그 구절의 시작으로 맞춘다
     void jumpPhrase(bool next) {
+        if (selfPaced) { if (next) ++sp.keyIdx; spStartKey(); return; }
         const double t = (frameNo - drillStartFrame) * 0.01;
         const Phrase ph = phraseAt(t);
         const double target = (ph.cycle + (next ? 1 : 0)) * repSec();
@@ -232,6 +255,7 @@ struct App {
                 return true;
             }
             case Drill::Scale5: {
+                if (selfPaced) { if (sp.stage != 1) return false; *midi = (float)(spKey() + kScaleSteps[sp.index]); return true; }
                 const Phrase ph = phraseAt(t);
                 if (ph.stage != 1) return false;
                 *midi = (float)(ph.key + kScaleSteps[ph.index]);
@@ -261,6 +285,8 @@ struct App {
         running = true;
         waiting = false;
         resetNotes(-1);
+        sp.keyIdx = 0;
+        spStartKey();
         // 세로 범위를 목표에 맞춰 한 번 정한다 (연습 중에는 움직이지 않는다)
         if (drill == Drill::Siren) { viewCenter = (lowMidi + highMidi) / 2.f; viewSpan = std::clamp((float)(highMidi - lowMidi) + 6.f, 10.f, 60.f); }
         else if (drill == Drill::Scale5) { viewCenter = scaleStartMidi + 3.5f + (highMidi - lowMidi) / 2.f; viewSpan = std::clamp((float)(highMidi - lowMidi) + 13.f, 12.f, 60.f); }
@@ -303,7 +329,26 @@ struct App {
                     ++noteCnt[ph.index];
                 }
             }
-            if (running && drill == Drill::Scale5) {
+            if (running && drill == Drill::Scale5 && selfPaced) {
+                if (sp.stage == 0) {
+                    const int li = (int)((frameNo - sp.demoStart) * 0.01 / scaleNoteSec);
+                    sp.listenIdx = li;
+                    if (li >= 9) { sp.stage = 1; sp.listenIdx = -1; }
+                } else if (sp.stage == 1 && f.voiced) {
+                    const float tg = (float)(spKey() + kScaleSteps[sp.index]);
+                    const float cents = (pitch::hzToMidi(f.hz) - tg) * 100.f;
+                    if (std::fabs(cents) <= 50.f) {
+                        ++sp.hold;
+                        sp.holdSum += cents;
+                        if (sp.hold >= 15) {  // 150 ms 맞게 유지하면 통과
+                            sp.cents[sp.index] = (float)(sp.holdSum / sp.hold);
+                            sp.done[sp.index] = true;
+                            sp.hold = 0; sp.holdSum = 0;
+                            if (++sp.index >= 9) { sp.stage = 2; waiting = phraseWait; if (!waiting) jumpPhrase(true); }
+                        }
+                    } else { sp.hold = 0; sp.holdSum = 0; }
+                }
+            } else if (running && drill == Drill::Scale5) {
                 const Phrase ph = phraseAt(t);
                 if (ph.cycle != notesCycle && ph.stage == 1) resetNotes(ph.cycle);
                 // 결과 보기가 끝나는 순간 멈추고 기다린다 (시계를 멈춰 결과 화면에 머문다)
@@ -327,7 +372,10 @@ struct App {
         if (running && guideTone && !waiting) {
             float target = 0.f;
             const double t = (frameNo - drillStartFrame) * 0.01;
-            if (drill == Drill::Scale5 && phraseAt(t).stage == 3) {
+            if (drill == Drill::Scale5 && selfPaced) {
+                if (sp.stage == 0 && sp.listenIdx >= 0 && sp.listenIdx < 9) tone.set(pitch::midiToHz((float)(spKey() + kScaleSteps[sp.listenIdx])), guideVolume);
+                else tone.set(0.f, 0.f);
+            } else if (drill == Drill::Scale5 && phraseAt(t).stage == 3) {
                 const Phrase ph = phraseAt(t);
                 tone.set(pitch::midiToHz((float)(ph.key + kScaleSteps[ph.index])), guideVolume);  // 듣기: 음을 들려준다
             } else if (targetAt(t, &target)) tone.set(pitch::midiToHz(target), (drill == Drill::Scale5 && demoFirst) ? 0.f : guideVolume);  // 들려준 뒤엔 혼자 부른다
@@ -400,7 +448,56 @@ struct App {
         dl->PushClipRect(g0, g1, true);
         ImFont* font = ImGui::GetFont();
         const double startT = drillStartFrame * 0.01;
-        if (running && drill == Drill::Scale5) {
+        if (running && drill == Drill::Scale5 && selfPaced) {
+            // 자유 박자: 9음을 계단처럼 왼쪽부터 늘어놓고, 지금 맞혀야 할 음을 밝게. 내 음은 그 칸 위에 노란 점으로
+            const float colW = gw / 9.f;
+            const int key = spKey();
+            for (int i = 0; i < 9; ++i) {
+                const float midi = (float)(key + kScaleSteps[i]);
+                const float x0 = g0.x + i * colW + 6, x1 = g0.x + (i + 1) * colW - 6, y0 = yOf(midi + 0.45f), y1 = yOf(midi - 0.45f);
+                ImU32 fill = IM_COL32(90, 170, 255, 60);
+                if (sp.stage == 0) fill = i == sp.listenIdx ? IM_COL32(80, 220, 200, 220) : IM_COL32(80, 220, 200, 50);
+                else if (sp.done[i]) fill = (centsColor(sp.cents[i]) & 0x00FFFFFF) | 0xC0000000;
+                else if (sp.stage == 1 && i == sp.index) fill = IM_COL32(90, 170, 255, 140);
+                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), fill, 4.f);
+                if (sp.stage == 1 && i == sp.index) dl->AddRect(ImVec2(x0 - 2, y0 - 2), ImVec2(x1 + 2, y1 + 2), IM_COL32(255, 255, 255, 230), 5.f, 0, 2.5f * uiScale);
+                const std::string name = pitch::noteName((int)midi);
+                const float tw = font->CalcTextSizeA(14.f * uiScale, FLT_MAX, 0.f, name.c_str()).x;
+                dl->AddText(font, 14.f * uiScale, ImVec2((x0 + x1) / 2 - tw / 2, (y0 + y1) / 2 - 7.f * uiScale), IM_COL32(255, 255, 255, 230), name.c_str());
+                // 맞힌 음엔 센트 표시
+                if (sp.done[i]) {
+                    char c[16]; snprintf(c, sizeof c, "%+d", (int)std::lround(sp.cents[i]));
+                    const float cw = font->CalcTextSizeA(12.f * uiScale, FLT_MAX, 0.f, c).x;
+                    dl->AddText(font, 12.f * uiScale, ImVec2((x0 + x1) / 2 - cw / 2, y1 + 3), IM_COL32(200, 200, 200, 200), c);
+                }
+            }
+            if (sp.stage == 1 && haveCurrent) {
+                // 내 음: 지금 칸 위의 노란 점 (맞는 중이면 점점 차오르는 고리)
+                const float cx = g0.x + (sp.index + 0.5f) * colW, cy = yOf(smoothMidi);
+                dl->AddCircleFilled(ImVec2(cx, cy), 7.f * uiScale, IM_COL32(255, 210, 80, 255));
+                if (sp.hold > 0) dl->PathArcTo(ImVec2(cx, cy), 12.f * uiScale, -1.5708f, -1.5708f + 6.2832f * sp.hold / 15.f, 24), dl->PathStroke(IM_COL32(120, 230, 120, 255), 0, 3.f * uiScale);
+            }
+            const float fs = 20.f * uiScale;
+            std::string msg;
+            if (sp.stage == 0) msg = "듣기 — " + pitch::noteName(key) + " 에서 도레미파솔파미레도";
+            else if (sp.stage == 1) {
+                const int tg = key + kScaleSteps[sp.index];
+                msg = "다음 음: " + pitch::noteName(tg) + "  (" + std::to_string(sp.index + 1) + "/9)";
+                if (haveCurrent) { const float d = (smoothMidi - tg) * 100.f; msg += std::fabs(d) <= 50 ? "  좋아요, 그대로!" : d > 0 ? "  ↓ 내리세요" : "  ↑ 올리세요"; }
+            } else {
+                int hit = 0; double sum = 0;
+                for (int i = 0; i < 9; ++i) { sum += std::fabs(sp.cents[i]); if (std::fabs(sp.cents[i]) <= 25) ++hit; }
+                char buf[160]; snprintf(buf, sizeof buf, "%s 끝! 9음 중 %d음이 ±25 센트 안 · 평균 오차 %.0f 센트", pitch::noteName(key).c_str(), hit, sum / 9);
+                msg = buf;
+            }
+            const float tw = font->CalcTextSizeA(fs, FLT_MAX, 0.f, msg.c_str()).x;
+            dl->AddText(font, fs, ImVec2((g0.x + g1.x) / 2 - tw / 2, g0.y + 14 * uiScale), IM_COL32(255, 255, 255, 230), msg.c_str());
+            if (sp.stage == 2 && waiting) {
+                const std::string next = "Space: 다음 키 " + pitch::noteName(key + 1) + "   ·   R: 이 키 다시";
+                const float nw = font->CalcTextSizeA(16.f * uiScale, FLT_MAX, 0.f, next.c_str()).x;
+                dl->AddText(font, 16.f * uiScale, ImVec2((g0.x + g1.x) / 2 - nw / 2, g0.y + 14 * uiScale + fs + 6), IM_COL32(255, 210, 80, 230), next.c_str());
+            }
+        } else if (running && drill == Drill::Scale5) {
             // 음마다 블록: 지난 음은 결과 색, 지금 음은 밝은 테두리, 다음 음은 반투명 파랑. 준비 구간엔 카운트 숫자
             const double tNow = nowT - startT;
             const Phrase cur = phraseAt(tNow);
@@ -478,10 +575,12 @@ struct App {
             }
             if (pts.size() >= 2) dl->AddPolyline(pts.data(), (int)pts.size(), IM_COL32(90, 170, 255, 220), 3.f * uiScale);
         }
-        // 지금 선
-        dl->AddLine(ImVec2(xOf(nowT), g0.y), ImVec2(xOf(nowT), g1.y), IM_COL32(255, 255, 255, 110), 2.f);
-        if (running && drill != Drill::Free) { float midi; if (targetAt(nowT - startT, &midi)) dl->AddCircleFilled(ImVec2(xOf(nowT), yOf(midi)), 5.f * uiScale, IM_COL32(90, 170, 255, 255)); }
-        {
+        // 지금 선 (자유 박자 계단 화면에서는 없음)
+        if (!(running && drill == Drill::Scale5 && selfPaced)) {
+            dl->AddLine(ImVec2(xOf(nowT), g0.y), ImVec2(xOf(nowT), g1.y), IM_COL32(255, 255, 255, 110), 2.f);
+            if (running && drill != Drill::Free) { float midi; if (targetAt(nowT - startT, &midi)) dl->AddCircleFilled(ImVec2(xOf(nowT), yOf(midi)), 5.f * uiScale, IM_COL32(90, 170, 255, 255)); }
+        }
+        if (!(running && drill == Drill::Scale5 && selfPaced)) {
             std::vector<ImVec2> pts;
             ImU32 col = IM_COL32(255, 210, 80, 255);
             const long long first = frameNo - (long long)hist.size();
@@ -580,6 +679,9 @@ struct App {
                 ImGui::SetNextItemWidth(140 * uiScale);
                 ImGui::SliderFloat("한 음 길이", &scaleNoteSec, 0.25f, 1.0f, "%.2f초");
                 ImGui::SameLine();
+                ImGui::Checkbox("자유 박자", &selfPaced);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("박자 없이 내 속도로. 다음 음을 0.15초쯤 맞게 내면 통과하고 그 다음 음으로 넘어갑니다.\n끄면 블록이 흐르는 박자 모드");
+                ImGui::SameLine();
                 ImGui::Checkbox("먼저 들려주기", &demoFirst);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("구절마다 먼저 9음을 들려준 뒤 3박 카운트하고 내가 부릅니다. 끄면 바로 카운트부터");
                 ImGui::SameLine();
@@ -641,7 +743,7 @@ struct App {
             ImGui::SameLine(0, 12);
             ImGui::TextDisabled(micOn ? "소리를 내 보세요" : "마이크를 켜세요");
         }
-        if (running && drill != Drill::Free && scoredFrames > 0) {
+        if (running && drill != Drill::Free && scoredFrames > 0 && !(drill == Drill::Scale5 && selfPaced)) {  // 자유 박자는 칸마다 결과가 있다
             ImGui::SameLine(0, 24);
             ImGui::TextDisabled("평균 오차 %.0f 센트 · ±25 센트 안 %d%%  (%.1f초)", sumAbsCents / scoredFrames, okFrames * 100 / scoredFrames, scoredFrames * 0.01);
         }
