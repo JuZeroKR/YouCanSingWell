@@ -10,8 +10,33 @@
 
 namespace {
 
+// 장치 목록용 컨텍스트 (한 번 만들어 계속 쓴다)
+ma_context* context() {
+    static ma_context ctx;
+    static bool ok = ma_context_init(nullptr, 0, nullptr, &ctx) == MA_SUCCESS;
+    return ok ? &ctx : nullptr;
+}
+int gCapture = -1;
+std::vector<ma_device_id> gCaptureIds;
+std::vector<std::string> gCaptureNames;
+
+void refreshCaptureList() {
+    gCaptureIds.clear();
+    gCaptureNames.clear();
+    ma_context* ctx = context();
+    if (!ctx) return;
+    ma_device_info* infos = nullptr;
+    ma_uint32 n = 0;
+    if (ma_context_get_devices(ctx, nullptr, nullptr, &infos, &n) != MA_SUCCESS) return;
+    for (ma_uint32 i = 0; i < n; ++i) {
+        gCaptureIds.push_back(infos[i].id);
+        gCaptureNames.push_back(std::string(infos[i].name) + (infos[i].isDefault ? " (기본)" : ""));
+    }
+}
+
 ma_device_config makeConfig(ma_device_type type, ma_device_data_proc cb, void* user) {
     ma_device_config cfg = ma_device_config_init(type);
+    if (gCapture >= 0 && gCapture < (int)gCaptureIds.size()) cfg.capture.pDeviceID = &gCaptureIds[gCapture];
     cfg.sampleRate = kSampleRate;
     cfg.playback.format = ma_format_f32;
     cfg.playback.channels = 1;
@@ -24,7 +49,7 @@ ma_device_config makeConfig(ma_device_type type, ma_device_data_proc cb, void* u
 }
 
 void openAndStart(ma_device& dev, const ma_device_config& cfg, const char* what) {
-    if (ma_device_init(nullptr, &cfg, &dev) != MA_SUCCESS) throw std::runtime_error(std::string(what) + " 장치를 열 수 없습니다");
+    if (ma_device_init(context(), &cfg, &dev) != MA_SUCCESS) throw std::runtime_error(std::string(what) + " 장치를 열 수 없습니다");
     if (ma_device_start(&dev) != MA_SUCCESS) {
         ma_device_uninit(&dev);
         throw std::runtime_error(std::string(what) + " 장치를 시작할 수 없습니다");
@@ -223,6 +248,13 @@ std::vector<SongEngine::MicChunk> SongEngine::drainMic() {
 // ---------------- 파일 · 변환 ----------------
 
 namespace audio {
+
+std::vector<std::string> captureDevices() {
+    if (gCaptureNames.empty()) refreshCaptureList();
+    return gCaptureNames;
+}
+void setCaptureDevice(int index) { gCapture = index; }
+int captureDevice() { return gCapture; }
 
 std::vector<float> resample(const std::vector<float>& pcm, int fromRate, int toRate) {
     if (fromRate == toRate || pcm.empty()) return pcm;

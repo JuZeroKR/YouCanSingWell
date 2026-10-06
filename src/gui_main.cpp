@@ -57,7 +57,7 @@ const char* kDrillNames[] = {"자유 (음정만 보기)", "사이렌 (립트릴)
 const char* kDrillHelp[] = {
     "그냥 소리를 내 보세요. 지금 음과 센트 차이가 위에 나옵니다.",
     "입술을 털며 '브르르' 소리로 파란 선을 따라 천천히 올라갔다 내려오세요. 소리가 끊기지 않게 숨을 고르게.",
-    "3박 카운트 뒤 도레미파솔파미레도. 블록에 맞춰 부르면 음마다 색으로 결과가 나오고, 구절이 끝나면 멈춥니다 (Space 로 다음 키).",
+    "먼저 들려주는 소리를 듣고, 3박 카운트 뒤 블록에 맞춰 따라 부르세요. 음마다 색으로 결과가 나오고 구절이 끝나면 멈춥니다 (Space 로 다음 키).",
     "파란 선의 음을 길게 붙드세요. 노란 선이 흔들리지 않게.",
 };
 
@@ -146,25 +146,29 @@ struct App {
     int sustainMidi = 55;
     bool guideTone = true;
     float guideVolume = 0.25f;
-    float sensitivity = 60.f;         // 마이크 민감도 0~100 % (높을수록 거친 소리 · 작은 소리도 음으로 친다)
+    float sensitivity = 70.f;         // 마이크 민감도 0~100 % (높을수록 거친 소리 · 작은 소리도 음으로 친다)
 
     // 5음 음계는 "구절" 단위: 준비 3박(카운트) → 9음 → 결과 보기. 구절마다 반음씩 올라간다
     static constexpr int kScaleSteps[9] = {0, 2, 4, 5, 7, 5, 4, 2, 0};
     static constexpr double kResultSec = 1.5;
     bool phraseWait = true;           // 구절이 끝나면 멈추고 Space 를 기다린다
+    bool demoFirst = true;            // 구절마다 먼저 9음을 들려준 뒤(듣기) 카운트하고 내가 부른다
     bool waiting = false;             // 지금 기다리는 중 (연습 시계를 멈춘다)
-    struct Phrase { int cycle = 0; int stage = 0; int index = 0; double u = 0; int key = 0; double start = 0; };  // stage 0 준비, 1 노래, 2 결과
+    struct Phrase { int cycle = 0; int stage = 0; int index = 0; double u = 0; int key = 0; double start = 0; };  // stage 3 듣기, 0 준비(카운트), 1 내가 부르기, 2 결과
+    double demoSec() const { return demoFirst ? scaleNoteSec * 9 : 0.0; }
+    double repSec() const { return demoSec() + scaleNoteSec * 3 + scaleNoteSec * 9 + kResultSec; }
     Phrase phraseAt(double t) const {
         Phrase ph;
-        const double countIn = scaleNoteSec * 3, sing = scaleNoteSec * 9, rep = countIn + sing + kResultSec;
+        const double demo = demoSec(), countIn = scaleNoteSec * 3, sing = scaleNoteSec * 9, rep = repSec();
         ph.cycle = std::max(0, (int)(t / rep));
         ph.start = ph.cycle * rep;
         const double u = t - ph.start;
         const int span = std::max(1, highMidi - lowMidi);
         ph.key = scaleStartMidi + (ph.cycle % (span + 1));
-        if (u < countIn) { ph.stage = 0; ph.index = (int)(u / scaleNoteSec); ph.u = u; }
-        else if (u < countIn + sing) { ph.stage = 1; ph.index = std::min(8, (int)((u - countIn) / scaleNoteSec)); ph.u = u - countIn; }
-        else { ph.stage = 2; ph.index = 0; ph.u = u - countIn - sing; }
+        if (u < demo) { ph.stage = 3; ph.index = std::min(8, (int)(u / scaleNoteSec)); ph.u = u; }
+        else if (u < demo + countIn) { ph.stage = 0; ph.index = (int)((u - demo) / scaleNoteSec); ph.u = u - demo; }
+        else if (u < demo + countIn + sing) { ph.stage = 1; ph.index = std::min(8, (int)((u - demo - countIn) / scaleNoteSec)); ph.u = u - demo - countIn; }
+        else { ph.stage = 2; ph.index = 0; ph.u = u - demo - countIn - sing; }
         return ph;
     }
     double noteSum[9] = {}; int noteCnt[9] = {}; int notesCycle = -1;   // 현재 구절의 음별 센트 누적
@@ -172,7 +176,7 @@ struct App {
     void applySensitivity() {
         // 0 → 주기성 0.75 · 바닥 +18 dB (조용한 방, 또렷한 소리만), 1 → 0.40 · +8 dB (립트릴처럼 거친 소리까지)
         const float k = sensitivity / 100.f;
-        const float clarity = 0.75f - 0.35f * k, above = 18.f - 10.f * k;
+        const float clarity = 0.75f - 0.45f * k, above = 18.f - 12.f * k;  // 100 % 면 주기성 0.30 · 바닥 +6 dB
         tracker.setSensitivity(clarity, above);
         songTracker.setSensitivity(clarity, above);
     }
@@ -314,7 +318,10 @@ struct App {
         if (running && guideTone && !waiting) {
             float target = 0.f;
             const double t = (frameNo - drillStartFrame) * 0.01;
-            if (targetAt(t, &target)) tone.set(pitch::midiToHz(target), guideVolume);
+            if (drill == Drill::Scale5 && phraseAt(t).stage == 3) {
+                const Phrase ph = phraseAt(t);
+                tone.set(pitch::midiToHz((float)(ph.key + kScaleSteps[ph.index])), guideVolume);  // 듣기: 음을 들려준다
+            } else if (targetAt(t, &target)) tone.set(pitch::midiToHz(target), (drill == Drill::Scale5 && demoFirst) ? 0.f : guideVolume);  // 들려준 뒤엔 혼자 부른다
             else if (drill == Drill::Scale5 && phraseAt(t).stage == 0) {
                 // 준비 카운트: 박마다 시작 음을 짧게 '띡'
                 const Phrase ph = phraseAt(t);
@@ -388,17 +395,29 @@ struct App {
             // 음마다 블록: 지난 음은 결과 색, 지금 음은 밝은 테두리, 다음 음은 반투명 파랑. 준비 구간엔 카운트 숫자
             const double tNow = nowT - startT;
             const Phrase cur = phraseAt(tNow);
-            const double countIn = scaleNoteSec * 3, rep = countIn + scaleNoteSec * 9 + kResultSec;
+            const double demo = demoSec(), countIn = scaleNoteSec * 3, rep = repSec();
             const int c0 = std::max(0, (int)((tLeft - startT) / rep)), c1 = (int)((tLeft + windowSec - startT) / rep) + 1;
             for (int c = c0; c <= c1; ++c) {
                 const Phrase ph = phraseAt(c * rep + 0.001);
+                // 듣기 블록 (청록, 비어 있음): 들려주는 음
+                for (int i = 0; demoFirst && i < 9; ++i) {
+                    const double ta = startT + c * rep + i * scaleNoteSec, tb = ta + scaleNoteSec;
+                    const float midi = (float)(ph.key + kScaleSteps[i]);
+                    const float x0 = xOf(ta) + 1, x1 = xOf(tb) - 1, y0 = yOf(midi + 0.45f), y1 = yOf(midi - 0.45f);
+                    if (x1 < g0.x || x0 > g1.x) continue;
+                    const bool isCur = c == cur.cycle && cur.stage == 3 && i == cur.index;
+                    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), isCur ? IM_COL32(80, 220, 200, 200) : IM_COL32(80, 220, 200, 50), 3.f);
+                    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(80, 220, 200, 160), 3.f);
+                    if (i == 0 && x0 >= g0.x) dl->AddText(font, 13.f * uiScale, ImVec2(x0 + 2, y0 - 16.f * uiScale), IM_COL32(80, 220, 200, 220), "듣기");
+                }
                 for (int i = 0; i < 9; ++i) {
-                    const double ta = startT + c * rep + countIn + i * scaleNoteSec, tb = ta + scaleNoteSec;
+                    const double ta = startT + c * rep + demo + countIn + i * scaleNoteSec, tb = ta + scaleNoteSec;
                     const float midi = (float)(ph.key + kScaleSteps[i]);
                     const float x0 = xOf(ta) + 1, x1 = xOf(tb) - 1, y0 = yOf(midi + 0.45f), y1 = yOf(midi - 0.45f);
                     if (x1 < g0.x || x0 > g1.x) continue;
                     const bool isCur = c == cur.cycle && cur.stage == 1 && i == cur.index;
-                    const bool past = startT + c * rep + countIn + (i + 1) * scaleNoteSec <= nowT;
+                    const bool past = startT + c * rep + demo + countIn + (i + 1) * scaleNoteSec <= nowT;
+                    if (i == 0 && x0 >= g0.x) dl->AddText(font, 13.f * uiScale, ImVec2(x0 + 2, y0 - 16.f * uiScale), IM_COL32(255, 210, 80, 220), "따라 부르기");
                     ImU32 fill = IM_COL32(90, 170, 255, 70);
                     if (past && c == notesCycle && noteCnt[i] > 0) fill = (centsColor((float)(noteSum[i] / noteCnt[i])) & 0x00FFFFFF) | 0xA0000000;
                     else if (past) fill = IM_COL32(120, 120, 130, 90);
@@ -408,6 +427,11 @@ struct App {
                     const float tw = font->CalcTextSizeA(13.f * uiScale, FLT_MAX, 0.f, name.c_str()).x;
                     if (x1 - x0 > tw + 6) dl->AddText(font, 13.f * uiScale, ImVec2((x0 + x1) / 2 - tw / 2, (y0 + y1) / 2 - 6.5f * uiScale), IM_COL32(255, 255, 255, 220), name.c_str());
                 }
+            }
+            if (cur.stage == 3) {
+                const std::string sub = "듣기 — " + pitch::noteName(cur.key) + " 에서 도레미파솔파미레도";
+                const float sw = font->CalcTextSizeA(20.f * uiScale, FLT_MAX, 0.f, sub.c_str()).x;
+                dl->AddText(font, 20.f * uiScale, ImVec2((g0.x + g1.x) / 2 - sw / 2, g0.y + 24 * uiScale), IM_COL32(80, 220, 200, 230), sub.c_str());
             }
             if (cur.stage == 0 && !waiting) {
                 // 카운트 3 · 2 · 1
@@ -488,8 +512,26 @@ struct App {
         } else {
             if (ImGui::Button("마이크 끄기")) { stopDrill(); stopMic(); }
             ImGui::SameLine();
-            ImGui::ProgressBar(std::min(1.f, mic.level() * 3.f), ImVec2(120 * uiScale, 0), "");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("마이크 입력 크기");
+            const float lv = mic.level();
+            char lvl[32];
+            snprintf(lvl, sizeof lvl, "%.0f dB", 20.f * std::log10(lv + 1e-5f));
+            ImGui::ProgressBar(std::min(1.f, lv * 3.f), ImVec2(120 * uiScale, 0), lvl);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("마이크 입력 크기 (피크). 말할 때 -30 dB 위로 올라와야 잘 잡힙니다.\n너무 작으면 Windows 소리 설정에서 마이크 볼륨을 올리거나 다른 마이크를 고르세요");
+        }
+        // 마이크 고르기 (여러 개면 엉뚱한 장치가 기본일 수 있다)
+        {
+            static std::vector<std::string> devs = audio::captureDevices();
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(220 * uiScale);
+            const int cur = audio::captureDevice();
+            const char* label = cur >= 0 && cur < (int)devs.size() ? devs[cur].c_str() : "기본 마이크";
+            if (ImGui::BeginCombo("##mic", label)) {
+                if (ImGui::Selectable("기본 마이크", cur < 0)) { audio::setCaptureDevice(-1); if (micOn) { stopMic(); startMic(); } }
+                for (int i = 0; i < (int)devs.size(); ++i)
+                    if (ImGui::Selectable(devs[i].c_str(), cur == i)) { audio::setCaptureDevice(i); if (micOn) { stopMic(); startMic(); } }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("소리가 안 잡히면 다른 마이크를 골라 보세요");
         }
         ImGui::SameLine(0, 16);
         ImGui::SetNextItemWidth(200 * uiScale);
@@ -529,6 +571,9 @@ struct App {
                 ImGui::SetNextItemWidth(140 * uiScale);
                 ImGui::SliderFloat("한 음 길이", &scaleNoteSec, 0.25f, 1.0f, "%.2f초");
                 ImGui::SameLine();
+                ImGui::Checkbox("먼저 들려주기", &demoFirst);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("구절마다 먼저 9음을 들려준 뒤 3박 카운트하고 내가 부릅니다. 끄면 바로 카운트부터");
+                ImGui::SameLine();
                 ImGui::Checkbox("구절마다 멈추기", &phraseWait);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("한 구절(도레미파솔파미레도) 이 끝나면 결과를 보여 주고 멈춥니다. Space 를 누르면 3박 카운트 뒤 다음 키로 이어집니다");
                 if (waiting) { ImGui::SameLine(); if (ImGui::Button("다음 구절")) waiting = false; }
@@ -551,7 +596,7 @@ struct App {
         if (micOn && !hist.empty()) {
             // 진단: 왜 안 찍히는지 볼 수 있게 (입력 크기 · 바닥 소음 · 주기성). 바닥 + 문턱보다 작거나 주기성이 낮으면 안 찍힌다
             const auto& f = hist.back();
-            const float needDb = f.noiseDb + (18.f - 10.f * sensitivity / 100.f), needCl = 0.75f - 0.35f * sensitivity / 100.f;
+            const float needDb = f.noiseDb + (18.f - 12.f * sensitivity / 100.f), needCl = 0.75f - 0.45f * sensitivity / 100.f;
             ImGui::SameLine(0, 16);
             ImGui::TextDisabled("입력 %.0f dB (필요 %.0f) · 주기성 %.2f (필요 %.2f)%s", f.db, needDb, f.clarity, needCl,
                                 f.voiced ? "" : f.db <= needDb ? "  ← 소리가 작아요 (민감도를 올리거나 마이크 가까이)" : f.clarity < needCl ? "  ← 음이 또렷하지 않아요 (민감도를 올리세요)" : "");

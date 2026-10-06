@@ -67,6 +67,10 @@ private:
 };
 
 namespace audio {
+// 마이크 목록 (이름). 비어 있으면 장치 없음. 선택은 번호로 하고 -1 이면 기본 장치
+std::vector<std::string> captureDevices();
+void setCaptureDevice(int index);   // 다음에 여는 LiveInput / SongEngine 부터 적용
+int captureDevice();
 std::vector<float> resample(const std::vector<float>& pcm, int fromRate, int toRate);  // 선형 보간
 std::vector<float> loadWav(const std::string& path, int sampleRate = kSampleRate);
 void saveWav(const std::string& path, const std::vector<float>& pcm, int sampleRate = kSampleRate);
