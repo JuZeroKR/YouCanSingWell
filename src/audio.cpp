@@ -128,6 +128,98 @@ void ToneGenerator::set(float hz, float gain) {
     impl_->targetGain = gain;
 }
 
+// ---------------- SongEngine ----------------
+
+struct SongEngine::Impl {
+    ma_device dev{};
+    bool running = false;
+    std::vector<float> inst, vocal;
+    std::atomic<size_t> pos{0};
+    std::atomic<bool> playing{false};
+    std::atomic<float> gInst{0.8f}, gVocal{0.3f}, gMon{0.7f};
+    std::atomic<float> level{0.f};
+    std::mutex m;
+    std::vector<MicChunk> chunks;
+
+    static void cb(ma_device* d, void* out, const void* in, ma_uint32 frames) {
+        auto* self = static_cast<Impl*>(d->pUserData);
+        float* y = static_cast<float*>(out);
+        const float* x = static_cast<const float*>(in);
+        const float gi = self->gInst.load(), gv = self->gVocal.load(), gm = self->gMon.load();
+        size_t p = self->pos.load();
+        const bool play = self->playing.load();
+        const size_t n = self->inst.size();
+        MicChunk chunk;
+        chunk.songSec = (double)p / kSampleRate;
+        chunk.pcm.assign(x, x + frames);
+        float peak = 0.f;
+        for (ma_uint32 i = 0; i < frames; ++i) {
+            float s = x[i] * gm;
+            peak = std::max(peak, std::fabs(x[i]));
+            if (play && p < n) {
+                s += self->inst[p] * gi + (p < self->vocal.size() ? self->vocal[p] * gv : 0.f);
+                ++p;
+            }
+            y[i] = std::max(-1.f, std::min(1.f, s));
+        }
+        if (play) {
+            self->pos.store(p);
+            if (p >= n) self->playing.store(false);  // 끝
+        }
+        self->level = std::max(peak, self->level.load() * 0.85f);
+        std::lock_guard<std::mutex> lock(self->m);
+        if (self->chunks.size() < 2000) self->chunks.push_back(std::move(chunk));
+    }
+};
+
+SongEngine::SongEngine() : impl_(new Impl) {}
+SongEngine::~SongEngine() { stop(); }
+
+void SongEngine::load(std::vector<float> inst48k, std::vector<float> vocal48k) {
+    const bool was = impl_->running;
+    if (was) stop();
+    impl_->inst = std::move(inst48k);
+    impl_->vocal = std::move(vocal48k);
+    impl_->pos = 0;
+    impl_->playing = false;
+    if (was) start();
+}
+
+void SongEngine::start() {
+    if (impl_->running) return;
+    openAndStart(impl_->dev, makeConfig(ma_device_type_duplex, Impl::cb, impl_.get()), "오디오");
+    impl_->running = true;
+}
+
+void SongEngine::stop() {
+    if (!impl_->running) return;
+    impl_->playing = false;
+    ma_device_uninit(&impl_->dev);
+    impl_->running = false;
+    std::lock_guard<std::mutex> lock(impl_->m);
+    impl_->chunks.clear();
+}
+
+bool SongEngine::active() const { return impl_->running; }
+void SongEngine::play() { if (impl_->pos.load() >= impl_->inst.size()) impl_->pos = 0; impl_->playing = true; }
+void SongEngine::pause() { impl_->playing = false; }
+bool SongEngine::playing() const { return impl_->playing.load(); }
+void SongEngine::seek(double sec) {
+    const size_t p = (size_t)std::max(0.0, sec) * kSampleRate;
+    impl_->pos = std::min(p, impl_->inst.size());
+}
+double SongEngine::positionSec() const { return (double)impl_->pos.load() / kSampleRate; }
+double SongEngine::durationSec() const { return (double)impl_->inst.size() / kSampleRate; }
+void SongEngine::setGains(float inst, float vocal, float monitor) { impl_->gInst = inst; impl_->gVocal = vocal; impl_->gMon = monitor; }
+float SongEngine::micLevel() const { return impl_->level.load(); }
+
+std::vector<SongEngine::MicChunk> SongEngine::drainMic() {
+    std::lock_guard<std::mutex> lock(impl_->m);
+    std::vector<MicChunk> out;
+    out.swap(impl_->chunks);
+    return out;
+}
+
 // ---------------- 파일 · 변환 ----------------
 
 namespace audio {

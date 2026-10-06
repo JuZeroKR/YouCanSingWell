@@ -37,6 +37,35 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// 노래 따라 부르기용 입출력 장치 하나: 반주 + 원곡 보컬을 재생하면서 마이크를 받아 (모니터링으로) 함께 내보낸다.
+// 재생과 마이크가 같은 콜백에서 돌아 서로의 시각이 맞는다. 모든 버퍼는 mono 48 kHz.
+class SongEngine {
+public:
+    SongEngine();
+    ~SongEngine();
+    void load(std::vector<float> inst48k, std::vector<float> vocal48k);  // 정지 상태에서 호출
+    void start();                        // 장치 열기 (실패 시 예외)
+    void stop();                         // 장치 닫기
+    bool active() const;
+
+    void play();
+    void pause();
+    bool playing() const;
+    void seek(double sec);
+    double positionSec() const;
+    double durationSec() const;
+    void setGains(float inst, float vocal, float monitor);
+
+    // 마이크 샘플과 그때의 노래 위치(초). 콜백마다 한 덩어리
+    struct MicChunk { double songSec; std::vector<float> pcm; };
+    std::vector<MicChunk> drainMic();
+    float micLevel() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 namespace audio {
 std::vector<float> resample(const std::vector<float>& pcm, int fromRate, int toRate);  // 선형 보간
 std::vector<float> loadWav(const std::string& path, int sampleRate = kSampleRate);

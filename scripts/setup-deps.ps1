@@ -69,6 +69,38 @@ if (-not (Test-Path "mpv\libmpv.lib")) {
     Set-Location $tp
 }
 
+# 6. demucs.cpp (보컬 분리 추론 라이브러리, MIT) + Eigen 서브모듈
+if (-not (Test-Path "demucs.cpp\src\model.hpp")) {
+    Step "demucs.cpp"
+    git clone -q --depth 1 https://github.com/sevagh/demucs.cpp.git demucs.cpp
+}
+if (-not (Test-Path "demucs.cpp\vendor\eigen\Eigen\Core")) {
+    Step "Eigen (demucs.cpp 서브모듈)"
+    git -C demucs.cpp submodule update --init --depth 1 vendor/eigen
+}
+
+# 7. 동봉 도구: yt-dlp, ffmpeg, deno (yt-dlp 의 자바스크립트 실행용) → build\Release\bin
+$bin = Join-Path $root "build\Release\bin"
+New-Item -ItemType Directory -Force $bin | Out-Null
+if (-not (Test-Path "$bin\yt-dlp.exe")) {
+    Step "yt-dlp"
+    curl.exe -sL -o "$bin\yt-dlp.exe" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+}
+if (-not (Test-Path "$bin\ffmpeg.exe")) {
+    Step "ffmpeg"
+    curl.exe -sL -o ffmpeg.zip "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-tmp -Force
+    Copy-Item (Get-ChildItem ffmpeg-tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName "$bin\ffmpeg.exe"
+    Remove-Item ffmpeg.zip; Remove-Item ffmpeg-tmp -Recurse -Force
+}
+if (-not (Test-Path "$bin\deno.exe")) {
+    Step "deno"
+    curl.exe -sL -o deno.zip "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+    Expand-Archive -Path deno.zip -DestinationPath deno-tmp -Force
+    Copy-Item "deno-tmp\deno.exe" "$bin\deno.exe"
+    Remove-Item deno.zip; Remove-Item deno-tmp -Recurse -Force
+}
+
 Write-Host ""
 Write-Host "완료. 이제 빌드하세요:" -ForegroundColor Green
 Write-Host '  cmake -S . -B build -A x64'
