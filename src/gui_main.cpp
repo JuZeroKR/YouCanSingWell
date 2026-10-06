@@ -241,6 +241,7 @@ struct App {
             }
             ++frameNo;
         }
+        if (hist.empty()) return;  // 탭을 막 바꿔 프레임이 아직 없을 때 (여기서 back() 을 읽으면 죽는다)
         const auto& last = hist.back();
         if (last.voiced) {
             const float m = pitch::hzToMidi(last.hz);
@@ -725,6 +726,7 @@ struct App {
         haveCurrent = false;
         if (t == 0) {
             if (engine.active()) { engine.pause(); engine.stop(); }
+            hist.clear();
             if (!micOn) startMic();
         } else {
             stopDrill();
