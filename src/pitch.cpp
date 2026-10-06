@@ -12,8 +12,8 @@ constexpr int kLagMin = (int)(kRate / kMaxHz);     // 16  (1000 Hz)
 constexpr int kLagMax = (int)(kRate / kMinHz);     // 266 (60 Hz)
 constexpr int kFrameLen = kCorrWin + kLagMax;      // 586
 constexpr float kPi = 3.14159265358979f;
-constexpr float kClarityVoiced = 0.55f;            // 주기성 문턱 (립트릴은 울림이 거칠어 조금 낮게)
-constexpr float kAboveNoiseDb = 12.f;              // 바닥 소음보다 이만큼 커야 소리로 친다
+constexpr float kClarityVoiced = 0.62f;            // 주기성 문턱 (너무 낮으면 방 소음이 점으로 깜빡인다)
+constexpr float kAboveNoiseDb = 15.f;              // 바닥 소음보다 이만큼 커야 소리로 친다
 constexpr float kLagBias = 0.03f;                  // 긴 지연(낮은 음) 을 조금 불리하게 — 옥타브 아래로 떨어지는 것 방지
 
 const char* kNames[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
@@ -124,7 +124,7 @@ void Tracker::postProcess(Frame& f) {
     // 바닥 소음: 조용할 땐 천천히 따라 내려가고, 커지면 아주 천천히 올라간다
     if (f.db < noiseDb_) noiseDb_ += (f.db - noiseDb_) * 0.2f;
     else noiseDb_ += (f.db - noiseDb_) * 0.002f;
-    const bool loud = f.db > noiseDb_ + kAboveNoiseDb && f.db > -55.f;
+    const bool loud = f.db > noiseDb_ + kAboveNoiseDb && f.db > -48.f;
     f.voiced = loud && f.clarity >= kClarityVoiced && f.hz >= kMinHz && f.hz <= kMaxHz;
     if (f.voiced && lastHz_ > 0.f) {
         // 직전 값의 옥타브 위아래로 튀었으면 바로잡는다 (한 프레임 만에 한 옥타브를 넘는 노래는 없다)

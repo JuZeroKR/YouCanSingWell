@@ -128,6 +128,8 @@ struct App {
     bool micOn = false;
 
     std::deque<pitch::Frame> hist;    // 연습 탭: 10 ms 프레임 이력
+    int voicedRun = 0;                // 이어진 유성음 프레임 수 (짧은 튐 거르기)
+    std::vector<pitch::Frame> pendingFrames;
     long long frameNo = 0;
     float smoothMidi = 0.f;
     bool haveCurrent = false;
@@ -145,10 +147,10 @@ struct App {
     float guideVolume = 0.25f;
     double sumAbsCents = 0;
     int scoredFrames = 0, okFrames = 0;
-    float windowSec = 8.f;
-    float viewSpan = 14.f;            // 세로로 보이는 반음 수 (휠로 조절). 작을수록 건반 간격이 넓다
-    float viewCenter = 55.f;          // 세로 가운데 음 (내 음 · 목표 음을 천천히 따라간다)
-    bool autoRange = true;            // 끄면 가운데를 직접 고른다
+    float windowSec = 12.f;           // 가로 12 초 (천천히 흐르게)
+    float viewSpan = 16.f;            // 세로로 보이는 반음 수 (휠로 조절). 작을수록 건반 간격이 넓다
+    float viewCenter = 55.f;          // 세로 가운데 음. 연습을 시작하면 목표 범위에 맞춰 한 번 정한다
+    bool autoRange = false;           // 켜면 음이 화면 밖으로 나갈 때 옮긴다 (기본은 가만히)
     int manualCenter = 55;
 
     // ---- 노래 ----
@@ -216,6 +218,10 @@ struct App {
 
     void startDrill() {
         running = true;
+        // 세로 범위를 목표에 맞춰 한 번 정한다 (연습 중에는 움직이지 않는다)
+        if (drill == Drill::Siren) { viewCenter = (lowMidi + highMidi) / 2.f; viewSpan = std::clamp((float)(highMidi - lowMidi) + 6.f, 10.f, 36.f); }
+        else if (drill == Drill::Scale5) { viewCenter = scaleStartMidi + 3.5f + (highMidi - lowMidi) / 2.f; viewSpan = std::clamp((float)(highMidi - lowMidi) + 13.f, 12.f, 36.f); }
+        else if (drill == Drill::Sustain) { viewCenter = (float)sustainMidi; viewSpan = std::max(viewSpan, 10.f); }
         drillStartFrame = frameNo;
         sumAbsCents = 0;
         scoredFrames = okFrames = 0;
@@ -229,6 +235,15 @@ struct App {
         if (pcm.empty()) return;
         auto frames = tracker.push(pcm.data(), pcm.size());
         for (auto& f : frames) {
+            // 잠깐 튄 소리(2 프레임 이하) 는 그리지 않는다 — 방 소음 · 숨소리가 점으로 깜빡이는 걸 막는다
+            if (f.voiced) ++voicedRun; else voicedRun = 0;
+            if (f.voiced && voicedRun < 3) { pendingFrames.push_back(f); f.voiced = false; f.hz = 0.f; }
+            else if (f.voiced && voicedRun == 3) {
+                // 3 프레임째에 앞의 두 프레임도 살린다
+                const size_t n = hist.size();
+                for (size_t k = 0; k < pendingFrames.size() && k < n; ++k) hist[n - pendingFrames.size() + k] = pendingFrames[k];
+                pendingFrames.clear();
+            } else pendingFrames.clear();
             hist.push_back(f);
             if ((int)hist.size() > kHistoryFrames) hist.pop_front();
             float target = 0.f;
@@ -286,8 +301,8 @@ struct App {
             const int n = ((m % 12) + 12) % 12;
             const bool black = n == 1 || n == 3 || n == 6 || n == 8 || n == 10;
             const float y0 = yOf(m + 0.5f), y1 = yOf(m - 0.5f);
-            if (!black) dl->AddRectFilled(ImVec2(g0.x, y0), ImVec2(g1.x, y1), IM_COL32(255, 255, 255, 10));
-            dl->AddLine(ImVec2(g0.x, y1), ImVec2(g1.x, y1), IM_COL32(255, 255, 255, n == 0 ? 60 : 22));
+            if (!black) dl->AddRectFilled(ImVec2(g0.x, y0), ImVec2(g1.x, y1), IM_COL32(255, 255, 255, 7));
+            if (n == 0 || n == 5) dl->AddLine(ImVec2(g0.x, y1), ImVec2(g1.x, y1), IM_COL32(255, 255, 255, n == 0 ? 55 : 20));  // C 와 F 자리에만 선
             const float rowH = y1 - y0;
             if (!black && rowH >= 11.f * uiScale) {
                 const std::string name = pitch::noteName(m);
@@ -340,13 +355,15 @@ struct App {
                 const double t = (first + (long long)i) * 0.01;
                 if (t < nowT - windowSec) continue;
                 if (!f.voiced) { flush(); continue; }
-                const float midi = pitch::hzToMidi(f.hz);
-                ImU32 c = IM_COL32(255, 210, 80, 255);
-                float target;
-                if (running && t >= drillStartFrame * 0.01 && targetAt(t - drillStartFrame * 0.01, &target)) c = centsColor((midi - target) * 100.f);
-                if (c != col && pts.size() >= 2) { dl->AddPolyline(pts.data(), (int)pts.size(), col, 2.5f * uiScale); const ImVec2 keep = pts.back(); pts.clear(); pts.push_back(keep); }
-                col = c;
-                pts.push_back(ImVec2(xOf(t), yOf(midi)));
+                // 앞뒤 프레임과 중앙값 (떨림을 줄여 선이 차분하게)
+                float m = pitch::hzToMidi(f.hz);
+                if (i > 0 && i + 1 < hist.size() && hist[i - 1].voiced && hist[i + 1].voiced) {
+                    float a = pitch::hzToMidi(hist[i - 1].hz), b = pitch::hzToMidi(hist[i + 1].hz);
+                    m = std::max(std::min(a, b), std::min(std::max(a, b), m));
+                }
+                // 바로 앞 점과 7 반음 넘게 차이 나면 (튄 값) 선을 잇지 않는다
+                if (!pts.empty() && std::fabs(yOf(m) - pts.back().y) > 7.f * gh / (hi - lo)) flush();
+                pts.push_back(ImVec2(xOf(t), yOf(m)));
             }
             flush();
         }
@@ -402,7 +419,7 @@ struct App {
         }
         ImGui::SameLine(0, 16);
         ImGui::Checkbox("화면 밖이면 옮기기", &autoRange);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("내 음(또는 목표 음)이 화면 밖으로 나가면 그 음이 가운데 오게 한 번에 옮깁니다.\n그래프 위에서 휠: 확대 · 축소, Shift+휠 또는 드래그: 위아래 이동");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("연습을 시작하면 세로 범위를 목표 음에 맞춰 한 번 정하고 가만히 둡니다.\n켜면 내 음이 화면 밖으로 나갈 때만 옮깁니다. 휠: 확대 · 축소, Shift+휠 · 드래그: 위아래 이동");
         if (!autoRange) {
             ImGui::SameLine();
             if (manualCenter == 55 && viewCenter != 55.f) manualCenter = (int)std::lround(viewCenter);
