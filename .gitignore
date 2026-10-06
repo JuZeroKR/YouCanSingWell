@@ -1,0 +1,18 @@
+# 빌드 결과물
+build/
+out/
+.vs/
+.claude/
+
+# 사용자 데이터 (노래, 녹음, SQLite)
+data/
+logs/
+
+# 분리 모델 (수십~수백 MB)
+models/
+
+# 외부 라이브러리 — scripts/setup-deps.ps1 로 받는다
+third_party/
+
+# 배포 패키지
+dist/
