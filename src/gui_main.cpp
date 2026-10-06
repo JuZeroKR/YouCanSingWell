@@ -229,8 +229,8 @@ struct App {
     void startDrill() {
         running = true;
         // 세로 범위를 목표에 맞춰 한 번 정한다 (연습 중에는 움직이지 않는다)
-        if (drill == Drill::Siren) { viewCenter = (lowMidi + highMidi) / 2.f; viewSpan = std::clamp((float)(highMidi - lowMidi) + 6.f, 10.f, 36.f); }
-        else if (drill == Drill::Scale5) { viewCenter = scaleStartMidi + 3.5f + (highMidi - lowMidi) / 2.f; viewSpan = std::clamp((float)(highMidi - lowMidi) + 13.f, 12.f, 36.f); }
+        if (drill == Drill::Siren) { viewCenter = (lowMidi + highMidi) / 2.f; viewSpan = std::clamp((float)(highMidi - lowMidi) + 6.f, 10.f, 60.f); }
+        else if (drill == Drill::Scale5) { viewCenter = scaleStartMidi + 3.5f + (highMidi - lowMidi) / 2.f; viewSpan = std::clamp((float)(highMidi - lowMidi) + 13.f, 12.f, 60.f); }
         else if (drill == Drill::Sustain) { viewCenter = (float)sustainMidi; viewSpan = std::max(viewSpan, 10.f); }
         drillStartFrame = frameNo;
         sumAbsCents = 0;
@@ -295,7 +295,7 @@ struct App {
         ImGuiIO& io = ImGui::GetIO();
         if (io.MouseWheel != 0.f) {
             if (io.KeyShift) *center = std::clamp(*center + io.MouseWheel, 24.f, 96.f);
-            else *span = std::clamp(*span - io.MouseWheel * 2.f, 6.f, 36.f);
+            else *span = std::clamp(*span - io.MouseWheel * 2.f, 6.f, 60.f);
         }
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.f)) {
             const float dy = io.MouseDelta.y;
@@ -448,7 +448,7 @@ struct App {
         }
         ImGui::SameLine();
         ImGui::SetNextItemWidth(120 * uiScale);
-        ImGui::SliderFloat("##span", &viewSpan, 6.f, 36.f, "%.0f 반음 보기");
+        ImGui::SliderFloat("##span", &viewSpan, 6.f, 60.f, "%.0f 반음 보기");
         ImGui::TextDisabled("%s", kDrillHelp[(int)drill]);
         if (micOn && !hist.empty()) {
             // 진단: 왜 안 찍히는지 볼 수 있게 (입력 크기 · 바닥 소음 · 주기성). 바닥 + 문턱보다 작거나 주기성이 낮으면 안 찍힌다
@@ -725,7 +725,7 @@ struct App {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("마이크 입력 크기");
         ImGui::SameLine(0, 16);
         ImGui::SetNextItemWidth(120 * uiScale);
-        ImGui::SliderFloat("##sspan", &songSpan, 6.f, 36.f, "%.0f 반음 보기");
+        ImGui::SliderFloat("##sspan", &songSpan, 6.f, 60.f, "%.0f 반음 보기");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("세로로 보이는 음의 폭. 그래프 위에서 마우스 휠로도 바꿉니다. 멜로디가 더 넓게 움직이면 자동으로 조금 넓어집니다");
 
         // 지금 음 · 점수
